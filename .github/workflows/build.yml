@@ -1,0 +1,90 @@
+name: Reduced ONNX Runtime (Android)
+
+# Builds ONNX Runtime 1.31.0 from source with only the operators our release models use, for Android
+# (arm64-v8a, armeabi-v7a) and as a Linux wheel to check that outputs match the stock runtime.
+# The op config is generated and maintained in the app repository; this repository only builds it.
+
+on:
+  workflow_dispatch:
+    inputs:
+      abis:
+        description: Android ABIs to build
+        default: arm64-v8a armeabi-v7a
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  op-coverage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: ort-build/fetch_models.sh "$RUNNER_TEMP/models"
+      - run: |
+          python -m pip install onnx onnxruntime==1.31.0
+          python ort-build/check_ops_covered.py ort-build/release_models.required_operators_and_types.config \
+            "$RUNNER_TEMP/models/scnet.int8.onnx" "$RUNNER_TEMP/models/nmp.onnx"
+
+  android-aar:
+    needs: op-coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Free disk space
+        run: sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/.ghcup /usr/local/share/boost || true
+      - name: Build reduced ORT AAR
+        env:
+          WORK: ${{ runner.temp }}/ort-build
+          ABIS: ${{ github.event.inputs.abis || 'arm64-v8a armeabi-v7a' }}
+        run: ort-build/build_reduced_ort.sh android
+      - name: Native library sizes
+        run: |
+          mkdir -p "$RUNNER_TEMP/aar" && unzip -q -o ort-build/out/onnxruntime-android-reduced-1.31.0.aar -d "$RUNNER_TEMP/aar"
+          for so in "$RUNNER_TEMP"/aar/jni/*/libonnxruntime.so; do
+            echo "$so $(stat -c%s "$so") bytes, gzip -9 $(gzip -9c "$so" | wc -c) bytes" | tee -a "$GITHUB_STEP_SUMMARY"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: onnxruntime-android-reduced-1.31.0
+          path: ort-build/out/onnxruntime-android-reduced-1.31.0.aar*
+
+  host-parity:
+    needs: op-coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Free disk space
+        run: sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/.ghcup /usr/local/share/boost || true
+      - name: Build reduced ORT for Linux (wheel)
+        env:
+          WORK: ${{ runner.temp }}/ort-build
+        run: ort-build/build_reduced_ort.sh host
+      - run: ort-build/fetch_models.sh "$RUNNER_TEMP/models"
+      - name: Outputs match the stock runtime at every optimisation level
+        run: |
+          M="$RUNNER_TEMP/models"
+          python -m venv "$RUNNER_TEMP/stock" && "$RUNNER_TEMP/stock/bin/pip" install -q numpy onnxruntime==1.31.0
+          python -m venv "$RUNNER_TEMP/reduced" && "$RUNNER_TEMP/reduced/bin/pip" install -q numpy ort-build/out/host/*.whl
+          "$RUNNER_TEMP/stock/bin/python" ort-build/parity.py dump "$RUNNER_TEMP/stock.npz" "$M/scnet.int8.onnx" "$M/nmp.onnx"
+          "$RUNNER_TEMP/reduced/bin/python" ort-build/parity.py dump "$RUNNER_TEMP/reduced.npz" "$M/scnet.int8.onnx" "$M/nmp.onnx"
+          python -m pip install -q numpy
+          python ort-build/parity.py compare "$RUNNER_TEMP/stock.npz" "$RUNNER_TEMP/reduced.npz" | tee -a "$GITHUB_STEP_SUMMARY"
