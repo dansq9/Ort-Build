@@ -47,8 +47,8 @@ log() { printf '\n== %s\n' "$*"; }
 
 install_toolchain() {
   local sdkm="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
-  [[ -d "$NDK" ]] || { log "installing NDK $NDK_VERSION"; yes | "$sdkm" --sdk_root="$ANDROID_HOME" "ndk;$NDK_VERSION" >/dev/null; }
-  [[ -x "$CMAKE_BIN/cmake" ]] || { log "installing cmake $CMAKE_VERSION"; yes | "$sdkm" --sdk_root="$ANDROID_HOME" "cmake;$CMAKE_VERSION" >/dev/null; }
+  [[ -d "$NDK" ]] || { log "installing NDK $NDK_VERSION"; { yes || true; } | "$sdkm" --sdk_root="$ANDROID_HOME" "ndk;$NDK_VERSION" >/dev/null; }
+  [[ -x "$CMAKE_BIN/cmake" ]] || { log "installing cmake $CMAKE_VERSION"; { yes || true; } | "$sdkm" --sdk_root="$ANDROID_HOME" "cmake;$CMAKE_VERSION" >/dev/null; }
 }
 
 fetch_source() {
